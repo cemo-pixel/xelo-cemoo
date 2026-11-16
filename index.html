@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sesli Sohbet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#E8EDEB;--ink:#1B2430;--mut:#5C6873;--card:#F7F9F8;--line:#C9D3D0;--acc:#4B3BFF;--onacc:#fff;--ok:#12A874;--bad:#D6453D}
+@media (prefers-color-scheme:dark){:root{--bg:#171C22;--ink:#E8EDEB;--mut:#93A0AB;--card:#222A33;--line:#35404B;--acc:#8F84FF;--onacc:#12141F;--ok:#3DD9A0;--bad:#FF7A70}}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--bg);color:var(--ink);font-family:'Bricolage Grotesque',system-ui,sans-serif;display:flex;justify-content:center;padding:24px 16px}
+main{width:100%;max-width:640px}
+h1{font-weight:800;font-size:clamp(2.2rem,9vw,3.6rem);line-height:1;letter-spacing:-.03em;margin:8vh 0 12px}
+p.lead{color:var(--mut);margin:0 0 28px;font-size:1.05rem;max-width:44ch}
+label{display:block;font-weight:600;font-size:.9rem;margin:0 0 6px}
+input{width:100%;font:inherit;padding:14px 16px;border-radius:12px;border:1.5px solid var(--line);background:var(--card);color:var(--ink);margin-bottom:16px}
+input:focus-visible,button:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+button{font:inherit;font-weight:600;border:0;border-radius:999px;padding:14px 26px;cursor:pointer;background:var(--acc);color:var(--onacc)}
+button.alt{background:var(--card);color:var(--ink);border:1.5px solid var(--line)}
+button.off{background:var(--bad);color:#fff;border:0}
+.err{color:var(--bad);min-height:1.4em;margin:12px 0 0;font-size:.95rem}
+.hide{display:none!important}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:4vh 0 24px}
+.top h2{margin:0;font-size:1.6rem;font-weight:800;letter-spacing:-.02em}
+.top span{color:var(--mut);font-size:.95rem}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:20px;margin-bottom:32px}
+.tile{text-align:center}
+.av{--lvl:0;position:relative;width:104px;height:104px;margin:0 auto 10px;border-radius:50%;background:var(--acc);color:var(--onacc);display:grid;place-items:center;font-size:2.4rem;font-weight:800;
+box-shadow:0 0 0 calc(var(--lvl)*14px) color-mix(in srgb,var(--ok) 45%,transparent),0 0 0 3px var(--card),0 0 0 5px var(--line);transition:box-shadow .08s}
+.tile.me .av{background:var(--ink);color:var(--bg)}
+.tile b{display:block;font-weight:600;word-break:break-word}
+.bar{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<main>
+  <section id="lobby">
+    <h1>Sesli sohbet</h1>
+    <p class="lead">Bir oda kodu seç, arkadaşlarına aynı kodu ver. Hepiniz aynı odada konuşursunuz.</p>
+    <label for="name">Adın</label>
+    <input id="name" maxlength="20" autocomplete="nickname">
+    <label for="room">Oda kodu</label>
+    <input id="room" maxlength="30" autocapitalize="off" placeholder="örn. cumartesi">
+    <button id="joinBtn">Odaya katıl</button>
+    <p class="err" id="err" role="alert"></p>
+  </section>
+
+  <section id="chat" class="hide">
+    <div class="top"><h2 id="roomTitle"></h2><span id="count"></span></div>
+    <div id="grid"></div>
+    <div class="bar">
+      <button id="muteBtn" class="alt">Mikrofonu kapat</button>
+      <button id="leaveBtn">Odadan çık</button>
+    </div>
+  </section>
+</main>
+<div id="audios"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+/* ====== AYARLAR: Supabase > Project Settings > API sayfasından kopyala ====== */
+const SUPABASE_URL = 'https://PROJE-ID.supabase.co';
+const SUPABASE_KEY = 'ANON-PUBLIC-KEY';
+/* ============================================================================ */
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const ICE = { iceServers: [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' }
+]};
+const $ = id => document.getElementById(id);
+let me, myName, room, channel, stream, actx, peers = {}, tiles = {}, muted = false, raf;
+
+const setErr = m => $('err').textContent = m || '';
+
+async function join() {
+  setErr();
+  myName = $('name').value.trim();
+  room = $('room').value.trim().toLowerCase().replace(/\s+/g, '-');
+  if (!myName || !room) return setErr('Adını ve oda kodunu yaz.');
+  if (SUPABASE_URL.includes('PROJE-ID')) return setErr('Önce dosyanın başındaki Supabase ayarlarını doldur.');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+  } catch (e) {
+    return setErr('Mikrofona erişilemedi. Tarayıcıda mikrofon iznini aç ve tekrar dene.');
+  }
+  me = crypto.randomUUID();
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  channel = sb.channel('ses:' + room, { config: { broadcast: { self: false }, presence: { key: me } } });
+  channel.on('broadcast', { event: 'signal' }, ({ payload }) => onSignal(payload));
+  channel.on('presence', { event: 'sync' }, syncPeers);
+  channel.subscribe(async status => {
+    if (status === 'SUBSCRIBED') {
+      await channel.track({ name: myName });
+      $('lobby').classList.add('hide');
+      $('chat').classList.remove('hide');
+      $('roomTitle').textContent = '#' + room;
+      addTile(me, myName + ' (sen)', stream, true);
+      loop();
+    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+      setErr('Sunucuya bağlanılamadı. Supabase URL ve anahtarını kontrol et.');
+      cleanup();
+    }
+  });
+}
+
+function syncPeers() {
+  const st = channel.presenceState();
+  const ids = Object.keys(st).filter(k => k !== me);
+  // Her çiftte id'si büyük olan teklifi (offer) başlatır; çakışma olmaz.
+  ids.forEach(id => { if (!peers[id]) connect(id, st[id][0].name, me > id); });
+  Object.keys(peers).forEach(id => { if (!ids.includes(id)) drop(id); });
+  $('count').textContent = (ids.length + 1) + ' kişi';
+}
+
+function connect(id, nm, initiator) {
+  const pc = new RTCPeerConnection(ICE);
+  peers[id] = { pc, queue: [], name: nm };
+  stream.getTracks().forEach(t => pc.addTrack(t, stream));
+  pc.onicecandidate = e => e.candidate && send(id, 'ice', e.candidate);
+  pc.ontrack = e => addTile(id, nm, e.streams[0], false);
+  pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' && initiator) pc.restartIce(); };
+  if (initiator) {
+    pc.createOffer()
+      .then(o => pc.setLocalDescription(o))
+      .then(() => send(id, 'offer', pc.localDescription));
+  }
+}
+
+function send(to, type, data) {
+  channel.send({ type: 'broadcast', event: 'signal', payload: { from: me, to, type, data, name: myName } });
+}
+
+async function flush(p) {
+  while (p.queue.length) await p.pc.addIceCandidate(p.queue.shift()).catch(() => {});
+}
+
+async function onSignal({ from, to, type, data, name }) {
+  if (to !== me || !stream) return;
+  let p = peers[from];
+  if (!p) {
+    if (type !== 'offer') return;
+    connect(from, name || 'Konuk', false);
+    p = peers[from];
+  }
+  const pc = p.pc;
+  try {
+    if (type === 'offer') {
+      await pc.setRemoteDescription(data);
+      await flush(p);
+      const a = await pc.createAnswer();
+      await pc.setLocalDescription(a);
+      send(from, 'answer', pc.localDescription);
+    } else if (type === 'answer') {
+      await pc.setRemoteDescription(data);
+      await flush(p);
+    } else if (type === 'ice') {
+      if (pc.remoteDescription) await pc.addIceCandidate(data).catch(() => {});
+      else p.queue.push(data);
+    }
+  } catch (e) { console.error(e); }
+}
+
+function drop(id) {
+  peers[id]?.pc.close();
+  delete peers[id];
+  tiles[id]?.el.remove();
+  delete tiles[id];
+}
+
+function addTile(id, label, mediaStream, isMe) {
+  if (tiles[id]) return;
+  const el = document.createElement('div');
+  el.className = 'tile' + (isMe ? ' me' : '');
+  el.innerHTML = '<div class="av"></div><b></b>';
+  el.querySelector('.av').textContent = label.trim().charAt(0).toUpperCase();
+  el.querySelector('b').textContent = label;
+  $('grid').appendChild(el);
+  if (!isMe) {
+    const a = document.createElement('audio');
+    a.autoplay = true; a.playsInline = true; a.srcObject = mediaStream;
+    $('audios').appendChild(a);
+    el.audio = a;
+  }
+  const src = actx.createMediaStreamSource(mediaStream);
+  const an = actx.createAnalyser();
+  an.fftSize = 256;
+  src.connect(an);
+  tiles[id] = { el, an, buf: new Uint8Array(an.frequencyBinCount), av: el.querySelector('.av'), isMe };
+}
+
+function loop() {
+  for (const k in tiles) {
+    const t = tiles[k];
+    if (t.isMe && muted) { t.av.style.setProperty('--lvl', 0); continue; }
+    t.an.getByteTimeDomainData(t.buf);
+    let s = 0;
+    for (const v of t.buf) { const d = (v - 128) / 128; s += d * d; }
+    const lvl = Math.min(1, Math.sqrt(s / t.buf.length) * 5);
+    t.av.style.setProperty('--lvl', lvl.toFixed(2));
+  }
+  raf = requestAnimationFrame(loop);
+}
+
+function toggleMute() {
+  muted = !muted;
+  stream.getAudioTracks().forEach(t => t.enabled = !muted);
+  const b = $('muteBtn');
+  b.textContent = muted ? 'Mikrofonu aç' : 'Mikrofonu kapat';
+  b.classList.toggle('off', muted);
+  b.classList.toggle('alt', !muted);
+}
+
+function cleanup() {
+  cancelAnimationFrame(raf);
+  Object.keys(peers).forEach(drop);
+  Object.keys(tiles).forEach(k => { tiles[k].el.remove(); delete tiles[k]; });
+  $('audios').innerHTML = '';
+  stream?.getTracks().forEach(t => t.stop());
+  stream = null;
+  actx?.close(); actx = null;
+  if (channel) { sb.removeChannel(channel); channel = null; }
+  muted = false;
+  const b = $('muteBtn'); b.textContent = 'Mikrofonu kapat'; b.className = 'alt';
+}
+
+function leave() {
+  cleanup();
+  $('chat').classList.add('hide');
+  $('lobby').classList.remove('hide');
+}
+
+$('joinBtn').onclick = join;
+$('room').addEventListener('keydown', e => e.key === 'Enter' && join());
+$('muteBtn').onclick = toggleMute;
+$('leaveBtn').onclick = leave;
+window.addEventListener('beforeunload', cleanup);
+</script>
+</body>
+</html>
