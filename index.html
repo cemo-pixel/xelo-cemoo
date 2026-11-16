@@ -33,6 +33,13 @@ box-shadow:0 0 0 calc(var(--lvl)*14px) color-mix(in srgb,var(--ok) 45%,transpare
 .tile.me .av{background:var(--ink);color:var(--bg)}
 .tile b{display:block;font-weight:600;word-break:break-word}
 .bar{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+#log{height:220px;overflow-y:auto;background:var(--card);border:1.5px solid var(--line);border-radius:14px;padding:12px;margin:28px 0 10px;display:flex;flex-direction:column;gap:8px}
+.msg{max-width:85%;padding:8px 12px;border-radius:14px;background:var(--bg);word-break:break-word;align-self:flex-start}
+.msg small{display:block;color:var(--mut);font-size:.78rem}
+.msg.me{align-self:flex-end;background:var(--acc);color:var(--onacc)}
+.msg.me small{color:inherit;opacity:.75}
+#chatRow{display:flex;gap:8px}
+#chatRow input{margin:0;flex:1}
 </style>
 </head>
 <body>
@@ -54,6 +61,11 @@ box-shadow:0 0 0 calc(var(--lvl)*14px) color-mix(in srgb,var(--ok) 45%,transpare
     <div class="bar">
       <button id="muteBtn" class="alt">Mikrofonu kapat</button>
       <button id="leaveBtn">Odadan çık</button>
+    </div>
+    <div id="log" aria-live="polite"></div>
+    <div id="chatRow">
+      <input id="msgIn" maxlength="500" placeholder="Mesaj yaz" aria-label="Mesaj">
+      <button id="sendBtn">Gönder</button>
     </div>
   </section>
 </main>
@@ -82,17 +94,21 @@ async function join() {
   room = $('room').value.trim().toLowerCase().replace(/\s+/g, '-');
   if (!myName || !room) return setErr('Adını ve oda kodunu yaz.');
   if (SUPABASE_URL.includes('PROJE-ID')) return setErr('Önce dosyanın başındaki Supabase ayarlarını doldur.');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return setErr('Bu ortam mikrofonu desteklemiyor (adres https olmalı). Hata: mediaDevices yok');
+  }
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
   } catch (e) {
-    return setErr('Mikrofona erişilemedi. Tarayıcıda mikrofon iznini aç ve tekrar dene.');
+    return setErr('Mikrofona erişilemedi. Mikrofon iznini aç ve tekrar dene. Hata: ' + e.name + (e.message ? ' – ' + e.message : ''));
   }
   me = crypto.randomUUID();
   actx = new (window.AudioContext || window.webkitAudioContext)();
   channel = sb.channel('ses:' + room, { config: { broadcast: { self: false }, presence: { key: me } } });
   channel.on('broadcast', { event: 'signal' }, ({ payload }) => onSignal(payload));
+  channel.on('broadcast', { event: 'chat' }, ({ payload }) => addMsg(payload.name, payload.text, false));
   channel.on('presence', { event: 'sync' }, syncPeers);
   channel.subscribe(async status => {
     if (status === 'SUBSCRIBED') {
@@ -207,6 +223,26 @@ function loop() {
   raf = requestAnimationFrame(loop);
 }
 
+function addMsg(who, text, mine) {
+  const d = document.createElement('div');
+  d.className = 'msg' + (mine ? ' me' : '');
+  const s = document.createElement('small'); s.textContent = who;
+  const t = document.createElement('span'); t.textContent = text;
+  d.append(s, t);
+  const l = $('log');
+  l.appendChild(d);
+  l.scrollTop = l.scrollHeight;
+}
+
+function sendChat() {
+  const i = $('msgIn');
+  const text = i.value.trim();
+  if (!text || !channel) return;
+  channel.send({ type: 'broadcast', event: 'chat', payload: { name: myName, text: text.slice(0, 500) } });
+  addMsg('Sen', text, true);
+  i.value = '';
+}
+
 function toggleMute() {
   muted = !muted;
   stream.getAudioTracks().forEach(t => t.enabled = !muted);
@@ -221,6 +257,7 @@ function cleanup() {
   Object.keys(peers).forEach(drop);
   Object.keys(tiles).forEach(k => { tiles[k].el.remove(); delete tiles[k]; });
   $('audios').innerHTML = '';
+  $('log').innerHTML = '';
   stream?.getTracks().forEach(t => t.stop());
   stream = null;
   actx?.close(); actx = null;
@@ -239,6 +276,8 @@ $('joinBtn').onclick = join;
 $('room').addEventListener('keydown', e => e.key === 'Enter' && join());
 $('muteBtn').onclick = toggleMute;
 $('leaveBtn').onclick = leave;
+$('sendBtn').onclick = sendChat;
+$('msgIn').addEventListener('keydown', e => e.key === 'Enter' && sendChat());
 window.addEventListener('beforeunload', cleanup);
 </script>
 </body>
